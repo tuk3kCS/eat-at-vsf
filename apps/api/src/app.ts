@@ -1,9 +1,11 @@
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
+import staticFiles from '@fastify/static';
 import { Prisma, type PrismaClient } from './generated/prisma/client.js';
 import { ZodError } from 'zod';
 import { adminRoutes } from './admin.js';
@@ -17,9 +19,11 @@ import { openAiProvider, type VisionProvider } from './vision.js';
 
 export async function buildApp(options: { db?: PrismaClient; vision?: VisionProvider; env?: NodeJS.ProcessEnv; logger?: boolean } = {}) {
   const env = options.env ?? process.env;
+  const serveWeb = env.SERVE_WEB === 'true';
   const secure = env.NODE_ENV === 'production';
-  if (secure && !env.APP_ORIGIN) throw new Error('APP_ORIGIN is required in production');
-  const origin = new URL(env.APP_ORIGIN ?? 'http://localhost:5173').origin;
+  const configuredOrigin = env.APP_ORIGIN ?? (serveWeb ? env.RENDER_EXTERNAL_URL : undefined);
+  if (secure && !configuredOrigin) throw new Error('APP_ORIGIN is required in production outside the combined Render web service');
+  const origin = new URL(configuredOrigin ?? 'http://localhost:5173').origin;
   if (secure && !origin.startsWith('https://')) throw new Error('APP_ORIGIN must use HTTPS in production');
   const app = Fastify({
     logger: options.logger ?? false, logController: new Fastify.LogController({ disableRequestLogging: true }),
@@ -43,7 +47,14 @@ export async function buildApp(options: { db?: PrismaClient; vision?: VisionProv
     if (!options.db) await db.$disconnect();
   });
 
-  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(helmet, { contentSecurityPolicy: serveWeb ? {
+    useDefaults: false,
+    directives: {
+      defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'https:', 'data:'], connectSrc: ["'self'"], fontSrc: ["'self'"],
+      objectSrc: ["'none'"], baseUri: ["'none'"], frameAncestors: ["'none'"], formAction: ["'self'"],
+    },
+  } : false });
   await app.register(cors, { origin, credentials: true, methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] });
   await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: imageLimit, files: 1, fields: 0, parts: 2 } });
@@ -69,7 +80,21 @@ export async function buildApp(options: { db?: PrismaClient; vision?: VisionProv
     request.log.error({ type: detail?.name, code: detail?.code, requestId: request.id }, 'Request failed');
     return reply.code(500).send({ error: { code: 'INTERNAL', message: 'Máy chủ gặp lỗi. Hãy thử lại sau.' } });
   });
-  app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Không tìm thấy đường dẫn.' } }));
+  if (serveWeb) {
+    await app.register(staticFiles, {
+      root: fileURLToPath(new URL('../../web/dist/', import.meta.url)),
+      wildcard: false,
+      index: false,
+    });
+  }
+  app.setNotFoundHandler((request, reply) => {
+    const pathname = request.url.split('?')[0]!;
+    if (serveWeb && (request.method === 'GET' || request.method === 'HEAD') &&
+        request.headers.accept?.includes('text/html') && !/^\/(?:api|assets|health)(?:\/|$)/.test(pathname)) {
+      return reply.header('Cache-Control', 'no-cache').sendFile('index.html', { cacheControl: false });
+    }
+    return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Không tìm thấy đường dẫn.' } });
+  });
   app.get('/health', async (_request, reply) => {
     try {
       await db.$queryRaw`SELECT 1`;

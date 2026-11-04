@@ -298,10 +298,31 @@ test('the deadline worker closes orders without a request and confirms only sele
   assert.fail('The deadline worker did not close the order.');
 });
 
-test('production uses a Secure host-only cookie and checks the exact web origin', async () => {
+test('combined Render service serves the web and keeps production authentication on the same origin', async () => {
   const productionOrigin = 'https://eat-vsf.example.test';
-  const secure = await buildApp({ db, env: { NODE_ENV: 'production', APP_ORIGIN: productionOrigin } });
+  const secure = await buildApp({ db, env: { NODE_ENV: 'production', SERVE_WEB: 'true', RENDER_EXTERNAL_URL: productionOrigin } });
   try {
+    const browser = { accept: 'text/html' };
+    for (const path of ['/', '/login', '/orders/example']) {
+      const page = await secure.inject({ url: path, headers: browser });
+      assert.equal(page.statusCode, 200, page.body);
+      assert.match(page.headers['content-type'] ?? '', /^text\/html/);
+      assert.match(page.body, /<div id="root"><\/div>/);
+      assert.equal(page.headers['cache-control'], 'no-cache');
+    }
+    const page = await secure.inject({ url: '/login', headers: browser });
+    const scriptPath = page.body.match(/<script[^>]+src="([^"]+)"/)?.[1];
+    assert.ok(scriptPath);
+    assert.equal((await secure.inject(scriptPath)).statusCode, 200);
+    for (const path of ['/api/v1/missing', '/assets/missing.js']) {
+      const missing = await secure.inject({ url: path, headers: browser });
+      assert.equal(missing.statusCode, 404);
+      assert.equal(missing.json().error.code, 'NOT_FOUND');
+    }
+    const health = await secure.inject('/health');
+    assert.equal(health.statusCode, 200);
+    assert.deepEqual(health.json(), { status: 'ok' });
+
     const payload = { username: 'https-' + randomUUID(), password };
     await db.user.create({ data: { username: payload.username, passwordHash: await hashPassword(password) } });
     const url = '/api/v1/auth/login';
@@ -316,5 +337,8 @@ test('production uses a Secure host-only cookie and checks the exact web origin'
     assert.match(cookie, /; Secure/);
     assert.match(cookie, /; SameSite=Lax/);
     assert.doesNotMatch(cookie, /; Domain=/i);
+    const profile = await secure.inject({ url: '/api/v1/auth/me', headers: { cookie: cookie.split(';')[0]! } });
+    assert.equal(profile.statusCode, 200);
+    assert.equal(profile.json<User>().username, payload.username);
   } finally { await secure.close(); }
 });
