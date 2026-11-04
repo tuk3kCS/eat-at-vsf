@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+services:
+  - name: eat-vsf-api
+    type: pserv
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile.api
+    autoDeployTrigger: checksPass
+    preDeployCommand: npm run migrate
+    envVars:
+      - key: PORT
+        value: "3001"
+      - key: APP_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: eat-vsf-db
+          property: connectionString
+
+  - name: eat-vsf-web
+    type: web
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile.web
+    autoDeployTrigger: checksPass
+    healthCheckPath: /health
+    envVars:
+      - key: API_UPSTREAM
+        fromService:
+          name: eat-vsf-api
+          type: pserv
+          property: hostport
+
+databases:
+  - name: eat-vsf-db
+    region: singapore
+    plan: basic-256mb
+    postgresMajorVersion: "17"
+    diskSizeGB: 1
+    ipAllowList: []

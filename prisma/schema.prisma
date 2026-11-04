@@ -1,0 +1,141 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../apps/api/src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum OrderStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+model User {
+  id           String             @id @default(uuid()) @db.Uuid
+  username     String             @unique
+  passwordHash String
+  role         Role               @default(USER)
+  deletedAt    DateTime?          @db.Timestamptz(3)
+  createdAt    DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime           @updatedAt @db.Timestamptz(3)
+  sessions     Session[]
+  orders       Order[]
+  memberships  OrderParticipant[]
+
+  @@index([deletedAt, username])
+}
+
+model Session {
+  tokenHash String   @id
+  userId    String   @db.Uuid
+  expiresAt DateTime @db.Timestamptz(3)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
+model Restaurant {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  address     String?
+  phone       String?
+  imageUrl    String?
+  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime?  @db.Timestamptz(3)
+  menu         MenuItem[]
+  orders       Order[]
+
+  @@index([deletedAt, name])
+}
+
+model MenuItem {
+  id           String      @id @default(uuid()) @db.Uuid
+  restaurantId String      @db.Uuid
+  name         String
+  description  String?
+  price        Int
+  imageUrl     String?
+  category     String?
+  isAvailable  Boolean     @default(true)
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
+  deletedAt    DateTime?   @db.Timestamptz(3)
+  restaurant   Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  orderItems   OrderItem[]
+
+  @@unique([id, restaurantId])
+  @@index([restaurantId, deletedAt, isAvailable, name])
+}
+
+model Order {
+  id             String             @id @default(uuid()) @db.Uuid
+  title          String?
+  restaurantId   String             @db.Uuid
+  createdById    String             @db.Uuid
+  status         OrderStatus        @default(OPEN)
+  deadline       DateTime           @db.Timestamptz(3)
+  note           String?
+  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
+  submittedAt    DateTime?          @db.Timestamptz(3)
+  cancelledAt    DateTime?          @db.Timestamptz(3)
+  restaurant     Restaurant         @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  createdBy      User               @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  participants   OrderParticipant[]
+  items          OrderItem[]
+
+  @@unique([id, restaurantId])
+  @@index([status, deadline])
+  @@index([createdById, createdAt])
+  @@index([restaurantId, createdAt])
+  @@index([createdAt])
+}
+
+model OrderParticipant {
+  id       String      @id @default(uuid()) @db.Uuid
+  orderId  String      @db.Uuid
+  userId   String      @db.Uuid
+  joinedAt DateTime    @default(now()) @db.Timestamptz(3)
+  confirmedAt DateTime? @db.Timestamptz(3)
+  order    Order       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  user     User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items    OrderItem[]
+
+  @@unique([orderId, userId])
+  @@unique([id, orderId])
+  @@index([userId, orderId])
+}
+
+model OrderItem {
+  id                String           @id @default(uuid()) @db.Uuid
+  orderId           String           @db.Uuid
+  restaurantId      String           @db.Uuid
+  participantId     String           @db.Uuid
+  menuItemId        String           @db.Uuid
+  itemNameSnapshot  String
+  unitPriceSnapshot Int
+  quantity          Int
+  version           Int              @default(1)
+  createdAt         DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @db.Timestamptz(3)
+  order             Order            @relation(fields: [orderId, restaurantId], references: [id, restaurantId], onDelete: Restrict)
+  participant       OrderParticipant @relation(fields: [participantId, orderId], references: [id, orderId], onDelete: Restrict)
+  menuItem          MenuItem         @relation(fields: [menuItemId, restaurantId], references: [id, restaurantId], onDelete: Restrict)
+
+  @@unique([participantId, menuItemId, itemNameSnapshot, unitPriceSnapshot])
+  @@index([orderId])
+  @@index([menuItemId, restaurantId])
+}
